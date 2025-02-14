@@ -1265,7 +1265,7 @@ function openSyncModal() {
       );
       if (!extensionURLs.some((url) => url.endsWith("s3.js"))) {
         extensionURLs.push(
-          "https://itcon-pty-au.github.io/typingmind-cloud-backup-bugfix/s3.js"
+          "https://itcon-pty-au.github.io/typingmind-cloud-backup/s3.js"
         );
         localStorage.setItem(
           "TM_useExtensionURLs",
@@ -2186,7 +2186,7 @@ function importDataToStorage(data) {
     );
     if (!extensionURLs.some((url) => url.endsWith("s3.js"))) {
       extensionURLs.push(
-        "https://itcon-pty-au.github.io/typingmind-cloud-backup-bugfix/s3.js"
+        "https://itcon-pty-au.github.io/typingmind-cloud-backup/s3.js"
       );
       localStorage.setItem(
         "TM_useExtensionURLs",
