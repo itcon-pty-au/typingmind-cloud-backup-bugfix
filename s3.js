@@ -538,21 +538,24 @@ async function backupToS3() {
   }
 
   isExportInProgress = true;
+  let data = null;
+  let dataStr = null;
+  let blob = null;
+
   try {
     lastExportStatus = "in-progress";
     updateSyncStatus();
     logToConsole("start", "Starting export to S3...");
-    let data = null;
-    let dataStr = null;
-    let blob = null;
     const bucketName = localStorage.getItem("aws-bucket");
     const awsRegion = localStorage.getItem("aws-region");
     const awsAccessKey = localStorage.getItem("aws-access-key");
     const awsSecretKey = localStorage.getItem("aws-secret-key");
     const awsEndpoint = localStorage.getItem("aws-endpoint");
+    
     if (typeof AWS === "undefined") {
       await loadAwsSdk();
     }
+
     const awsConfig = {
       accessKeyId: awsAccessKey,
       secretAccessKey: awsSecretKey,
@@ -562,307 +565,293 @@ async function backupToS3() {
       awsConfig.endpoint = awsEndpoint;
     }
     AWS.config.update(awsConfig);
-    try {
-      const s3 = new AWS.S3();
-      await cleanupIncompleteMultipartUploads(s3, bucketName);
-      data = await exportBackupData();
-      logToConsole("start", "Starting backup encryption");
-      const encryptedData = await encryptData(data);
-      blob = new Blob([encryptedData], { type: "application/octet-stream" });
-      logToConsole("info", "Blob created");
-      const dataSize = blob.size;
-      if (dataSize < 100) {
-        const error = new Error("Final backup blob is too small or empty");
-        error.code = "INVALID_BLOB_SIZE";
-        throw error;
-      }
 
+    const s3 = new AWS.S3();
+    await cleanupIncompleteMultipartUploads(s3, bucketName);
+    
+    data = await exportBackupData();
+    logToConsole("start", "Starting backup encryption");
+    const encryptedData = await encryptData(data);
+    blob = new Blob([encryptedData], { type: "application/octet-stream" });
+    logToConsole("info", "Blob created");
+    
+    const dataSize = blob.size;
+    if (dataSize < 100) {
+      throw new Error("Final backup blob is too small or empty");
+    }
+
+    const currentCloudData = await s3.getObject({
+      Bucket: bucketName,
+      Key: "typingmind-backup.json",
+    }).promise();
+
+    const cloudSize = currentCloudData.Body.length;
+    const localSize = dataSize;
+    const sizeDiffPercentage = Math.abs(((localSize - cloudSize) / cloudSize) * 100);
+
+    logToConsole("progress", "Export size comparison:", {
+      cloudSize: `${cloudSize} bytes`,
+      localSize: `${localSize} bytes`,
+      difference: `${localSize - cloudSize} bytes (${sizeDiffPercentage.toFixed(4)}%)`,
+    });
+
+    if (sizeDiffPercentage > getExportThreshold()) {
+      isWaitingForUserInput = true;
+      const message = `Warning: The new backup size (${localSize} bytes) differs significantly from the current cloud backup (${cloudSize} bytes) by ${sizeDiffPercentage.toFixed(
+        2
+      )}% (threshold: ${getExportThreshold()}%).\n\nDo you want to proceed with the upload?`;
+      const shouldProceed = await showCustomAlert(
+        message,
+        "Size Difference Warning",
+        [
+          { text: "Cancel", primary: false },
+          { text: "Proceed", primary: true },
+        ]
+      );
+      isWaitingForUserInput = false;
+      if (!shouldProceed) {
+        logToConsole("info", "Export cancelled due to size difference");
+        throw new Error(
+          "Export cancelled due to significant size difference"
+        );
+      }
+    }
+
+    if (dataSize > 5 * 1024 * 1024) {
       try {
-        const currentCloudData = await s3
-          .getObject({
-            Bucket: bucketName,
-            Key: "typingmind-backup.json",
-          })
-          .promise();
-
-        const cloudSize = currentCloudData.Body.length;
-        const localSize = dataSize;
-        const sizeDiffPercentage = Math.abs(
-          ((localSize - cloudSize) / cloudSize) * 100
-        );
-
-        logToConsole("progress", "Export size comparison:", {
-          cloudSize: `${cloudSize} bytes`,
-          localSize: `${localSize} bytes`,
-          difference: `${
-            localSize - cloudSize
-          } bytes (${sizeDiffPercentage.toFixed(4)}%)`,
-        });
-
-        if (sizeDiffPercentage > getExportThreshold()) {
-          isWaitingForUserInput = true;
-          const message = `Warning: The new backup size (${localSize} bytes) differs significantly from the current cloud backup (${cloudSize} bytes) by ${sizeDiffPercentage.toFixed(
-            2
-          )}% (threshold: ${getExportThreshold()}%).\n\nDo you want to proceed with the upload?`;
-          const shouldProceed = await showCustomAlert(
-            message,
-            "Size Difference Warning",
-            [
-              { text: "Cancel", primary: false },
-              { text: "Proceed", primary: true },
-            ]
-          );
-          isWaitingForUserInput = false;
-          if (!shouldProceed) {
-            logToConsole("info", "Export cancelled due to size difference");
-            throw new Error(
-              "Export cancelled due to significant size difference"
-            );
-          }
-        }
-      } catch (err) {
-        if (err.code !== "NoSuchKey") {
-          throw err;
-        }
         logToConsole(
-          "info",
-          "No existing backup found, proceeding with upload"
+          "start",
+          `Starting multipart upload for file size: ${dataSize} bytes`
         );
-      }
+        const createMultipartParams = {
+          Bucket: bucketName,
+          Key: "typingmind-backup.json",
+          ContentType: "application/json",
+          ServerSideEncryption: "AES256",
+        };
+        const multipart = await s3
+          .createMultipartUpload(createMultipartParams)
+          .promise();
+        logToConsole(
+          "success",
+          `Created multipart upload with ID: ${multipart.UploadId}`
+        );
 
-      localStorage.setItem("backup-size", dataSize.toString());
-      const chunkSize = 5 * 1024 * 1024;
-      if (dataSize > chunkSize) {
-        try {
-          logToConsole(
-            "start",
-            `Starting multipart upload for file size: ${dataSize} bytes`
-          );
-          const createMultipartParams = {
-            Bucket: bucketName,
-            Key: "typingmind-backup.json",
-            ContentType: "application/json",
-            ServerSideEncryption: "AES256",
-          };
-          const multipart = await s3
-            .createMultipartUpload(createMultipartParams)
-            .promise();
-          logToConsole(
-            "success",
-            `Created multipart upload with ID: ${multipart.UploadId}`
-          );
+        const uploadedParts = [];
+        let partNumber = 1;
+        const totalParts = Math.ceil(dataSize / (5 * 1024 * 1024));
 
-          const uploadedParts = [];
-          let partNumber = 1;
-          const totalParts = Math.ceil(dataSize / chunkSize);
-
-          for (let start = 0; start < dataSize; start += chunkSize) {
-            const end = Math.min(start + chunkSize, dataSize);
-            const chunk = blob.slice(start, end);
-            logToConsole(
-              "info",
-              `Processing part ${partNumber}/${totalParts} (${chunk.size} bytes)`
-            );
-
-            let uploadSuccess = false;
-            let lastError = null;
-            let retryCount = 0;
-            const maxRetries = 3;
-            const baseDelay = 2000;
-
-            while (!uploadSuccess && retryCount < maxRetries) {
-              try {
-                logToConsole(
-                  "upload",
-                  `Uploading part ${partNumber}/${totalParts} (attempt ${
-                    retryCount + 1
-                  }/${maxRetries})`
-                );
-
-                const arrayBuffer = await new Promise((resolve, reject) => {
-                  const reader = new FileReader();
-                  reader.onload = () => resolve(reader.result);
-                  reader.onerror = () => reject(reader.error);
-                  reader.readAsArrayBuffer(chunk);
-                });
-
-                const partParams = {
-                  Body: arrayBuffer,
-                  Bucket: bucketName,
-                  Key: "typingmind-backup.json",
-                  PartNumber: partNumber,
-                  UploadId: multipart.UploadId,
-                };
-
-                const uploadResult = await s3.uploadPart(partParams).promise();
-                logToConsole(
-                  "success",
-                  `Successfully uploaded part ${partNumber}/${totalParts} (ETag: ${uploadResult.ETag})`
-                );
-
-                uploadedParts.push({
-                  ETag: uploadResult.ETag,
-                  PartNumber: partNumber,
-                });
-                uploadSuccess = true;
-              } catch (error) {
-                lastError = error;
-                retryCount++;
-                logToConsole(
-                  "error",
-                  `Error uploading part ${partNumber}/${totalParts} (attempt ${retryCount}):`,
-                  error
-                );
-
-                if (retryCount === maxRetries) {
-                  logToConsole(
-                    "error",
-                    `All retries failed for part ${partNumber}, aborting multipart upload`
-                  );
-                  try {
-                    await s3
-                      .abortMultipartUpload({
-                        Bucket: bucketName,
-                        Key: "typingmind-backup.json",
-                        UploadId: multipart.UploadId,
-                      })
-                      .promise();
-                    logToConsole(
-                      "info",
-                      "Multipart upload aborted successfully"
-                    );
-                  } catch (abortError) {
-                    logToConsole(
-                      "error",
-                      "Error aborting multipart upload:",
-                      abortError
-                    );
-                  }
-                  throw new Error(
-                    `Failed to upload part ${partNumber} after ${maxRetries} attempts: ${lastError.message}`
-                  );
-                }
-
-                const delay = Math.min(
-                  baseDelay * Math.pow(2, retryCount) + Math.random() * 1000,
-                  30000
-                );
-                logToConsole(
-                  "info",
-                  `Retrying part ${partNumber} in ${Math.round(
-                    delay / 1000
-                  )} seconds`
-                );
-                await new Promise((resolve) => setTimeout(resolve, delay));
-              }
-            }
-
-            partNumber++;
-            const progress = Math.round(((start + chunkSize) / dataSize) * 100);
-            logToConsole(
-              "progress",
-              `Overall upload progress: ${Math.min(progress, 100)}%`
-            );
-          }
-
-          logToConsole(
-            "success",
-            `All parts uploaded, completing multipart upload`
-          );
-          const sortedParts = uploadedParts.sort(
-            (a, b) => a.PartNumber - b.PartNumber
-          );
-          logToConsole("success", `Sorted parts for completion:`, sortedParts);
-
-          const completeParams = {
-            Bucket: bucketName,
-            Key: "typingmind-backup.json",
-            UploadId: multipart.UploadId,
-            MultipartUpload: {
-              Parts: sortedParts.map((part) => ({
-                ETag: part.ETag,
-                PartNumber: part.PartNumber,
-              })),
-            },
-          };
-
+        for (let start = 0; start < dataSize; start += 5 * 1024 * 1024) {
+          const end = Math.min(start + 5 * 1024 * 1024, dataSize);
+          const chunk = blob.slice(start, end);
           logToConsole(
             "info",
-            `Complete multipart upload params:`,
-            JSON.stringify(completeParams, null, 2)
+            `Processing part ${partNumber}/${totalParts} (${chunk.size} bytes)`
           );
 
-          try {
-            logToConsole("info", `Sending complete multipart upload request`);
-            const completeResult = await s3
-              .completeMultipartUpload(completeParams)
-              .promise();
-            logToConsole(
-              "info",
-              `Complete multipart upload response:`,
-              completeResult
-            );
-            logToConsole("success", `Multipart upload completed successfully`);
-          } catch (completeError) {
-            logToConsole("error", "Complete multipart upload failed:", {
-              error: completeError,
-              params: completeParams,
-              uploadId: multipart.UploadId,
-              partsCount: sortedParts.length,
-              firstPart: sortedParts[0],
-              lastPart: sortedParts[sortedParts.length - 1],
-            });
-            throw completeError;
+          let uploadSuccess = false;
+          let lastError = null;
+          let retryCount = 0;
+          const maxRetries = 3;
+          const baseDelay = 2000;
+
+          while (!uploadSuccess && retryCount < maxRetries) {
+            try {
+              logToConsole(
+                "upload",
+                `Uploading part ${partNumber}/${totalParts} (attempt ${
+                  retryCount + 1
+                }/${maxRetries})`
+              );
+
+              const arrayBuffer = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(reader.error);
+                reader.readAsArrayBuffer(chunk);
+              });
+
+              const partParams = {
+                Body: arrayBuffer,
+                Bucket: bucketName,
+                Key: "typingmind-backup.json",
+                PartNumber: partNumber,
+                UploadId: multipart.UploadId,
+              };
+
+              const uploadResult = await s3.uploadPart(partParams).promise();
+              logToConsole(
+                "success",
+                `Successfully uploaded part ${partNumber}/${totalParts} (ETag: ${uploadResult.ETag})`
+              );
+
+              uploadedParts.push({
+                ETag: uploadResult.ETag,
+                PartNumber: partNumber,
+              });
+              uploadSuccess = true;
+            } catch (error) {
+              lastError = error;
+              retryCount++;
+              logToConsole(
+                "error",
+                `Error uploading part ${partNumber}/${totalParts} (attempt ${retryCount}):`,
+                error
+              );
+
+              if (retryCount === maxRetries) {
+                logToConsole(
+                  "error",
+                  `All retries failed for part ${partNumber}, aborting multipart upload`
+                );
+                try {
+                  await s3
+                    .abortMultipartUpload({
+                      Bucket: bucketName,
+                      Key: "typingmind-backup.json",
+                      UploadId: multipart.UploadId,
+                    })
+                    .promise();
+                  logToConsole(
+                    "info",
+                    "Multipart upload aborted successfully"
+                  );
+                } catch (abortError) {
+                  logToConsole(
+                    "error",
+                    "Error aborting multipart upload:",
+                    abortError
+                  );
+                }
+                throw new Error(
+                  `Failed to upload part ${partNumber} after ${maxRetries} attempts: ${lastError.message}`
+                );
+              }
+
+              const delay = Math.min(
+                baseDelay * Math.pow(2, retryCount) + Math.random() * 1000,
+                30000
+              );
+              logToConsole(
+                "info",
+                `Retrying part ${partNumber} in ${Math.round(
+                  delay / 1000
+                )} seconds`
+              );
+              await new Promise((resolve) => setTimeout(resolve, delay));
+            }
           }
-          lastExportTime = Date.now();
-        } catch (error) {
-          logToConsole("error", `Multipart upload failed with error:`, error);
-          await cleanupIncompleteMultipartUploads(s3, bucketName);
-          throw error;
+
+          partNumber++;
+          const progress = Math.round(((start + 5 * 1024 * 1024) / dataSize) * 100);
+          logToConsole(
+            "progress",
+            `Overall upload progress: ${Math.min(progress, 100)}%`
+          );
         }
-      } else {
-        logToConsole("start", "Starting standard upload to S3");
-        const putParams = {
+
+        logToConsole(
+          "success",
+          `All parts uploaded, completing multipart upload`
+        );
+        const sortedParts = uploadedParts.sort(
+          (a, b) => a.PartNumber - b.PartNumber
+        );
+        logToConsole("success", `Sorted parts for completion:`, sortedParts);
+
+        const completeParams = {
+          Bucket: bucketName,
+          Key: "typingmind-backup.json",
+          UploadId: multipart.UploadId,
+          MultipartUpload: {
+            Parts: sortedParts.map((part) => ({
+              ETag: part.ETag,
+              PartNumber: part.PartNumber,
+            })),
+          },
+        };
+
+        logToConsole(
+          "info",
+          `Complete multipart upload params:`,
+          JSON.stringify(completeParams, null, 2)
+        );
+
+        try {
+          logToConsole("info", `Sending complete multipart upload request`);
+          const completeResult = await s3
+            .completeMultipartUpload(completeParams)
+            .promise();
+          logToConsole(
+            "info",
+            `Complete multipart upload response:`,
+            completeResult
+          );
+          logToConsole("success", `Multipart upload completed successfully`);
+        } catch (completeError) {
+          logToConsole("error", "Complete multipart upload failed:", {
+            error: completeError,
+            params: completeParams,
+            uploadId: multipart.UploadId,
+            partsCount: sortedParts.length,
+            firstPart: sortedParts[0],
+            lastPart: sortedParts[sortedParts.length - 1],
+          });
+          throw completeError;
+        }
+      } catch (error) {
+        logToConsole("error", `Multipart upload failed with error:`, error);
+        await cleanupIncompleteMultipartUploads(s3, bucketName);
+        logToConsole("info", "Falling back to standard upload...");
+        await s3.putObject({
           Bucket: bucketName,
           Key: "typingmind-backup.json",
           Body: encryptedData,
           ContentType: "application/json",
           ServerSideEncryption: "AES256",
-        };
-        await s3.putObject(putParams).promise();
-        lastExportTime = Date.now();
+        }).promise();
       }
-      await handleTimeBasedBackup();
-      const currentTime = new Date().toLocaleString();
-      localStorage.setItem("last-cloud-sync", currentTime);
-      logToConsole("success", `Export completed successfully`);
-      lastExportStatus = "success";
-      var element = document.getElementById("last-sync-msg");
-      if (element !== null) {
-        element.innerText = `Last sync done at ${currentTime}`;
-      }
-      if (document.querySelector('[data-element-id="sync-modal-dbbackup"]')) {
-        await loadBackupFiles();
-      }
-      return true;
-    } catch (error) {
-      lastExportStatus = "failed";
-      lastExportTime = null;
-      updateSyncStatus();
-      logToConsole("error", `Export failed:`, error);
-      throw error;
-    } finally {
-      data = null;
-      dataStr = null;
-      blob = null;
-      isExportInProgress = false;
-      updateSyncStatus();
+    } else {
+      logToConsole("start", "Starting standard upload to S3");
+      await s3.putObject({
+        Bucket: bucketName,
+        Key: "typingmind-backup.json",
+        Body: encryptedData,
+        ContentType: "application/json",
+        ServerSideEncryption: "AES256",
+      }).promise();
     }
+
+    await handleTimeBasedBackup();
+    const currentTime = new Date().toLocaleString();
+    localStorage.setItem("last-cloud-sync", currentTime);
+    
+    lastExportStatus = "success";
+    lastExportTime = Date.now();
+    
+    const element = document.getElementById("last-sync-msg");
+    if (element) {
+      element.innerText = `Last sync done at ${currentTime}`;
+    }
+    
+    if (document.querySelector('[data-element-id="sync-modal-dbbackup"]')) {
+      await loadBackupFiles();
+    }
+
+    logToConsole("success", "Export completed successfully");
+    return true;
+
   } catch (error) {
     lastExportStatus = "failed";
+    lastExportTime = null;
     updateSyncStatus();
+    logToConsole("error", "Export failed:", error);
     throw error;
+
   } finally {
+    data = null;
+    dataStr = null;
+    blob = null;
     isExportInProgress = false;
     updateSyncStatus();
   }
