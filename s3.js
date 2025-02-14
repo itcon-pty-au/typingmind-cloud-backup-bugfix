@@ -13,6 +13,10 @@ let isPageFullyLoaded = false;
 let backupInterval = null;
 let isWaitingForUserInput = false;
 
+// Add these variables near the top of the file with other global variables
+let cloudOperationQueue = [];
+let isProcessingQueue = false;
+
 const hintCssLink = document.createElement("link");
 hintCssLink.rel = "stylesheet";
 hintCssLink.href = "https://cdn.jsdelivr.net/npm/hint.css/hint.min.css";
@@ -220,6 +224,38 @@ function updateSyncStatus() {
   } else {
     syncStatus.style.display = "none";
   }
+}
+
+// Add this new function to handle the queue
+async function processCloudOperationQueue() {
+    if (isProcessingQueue || cloudOperationQueue.length === 0) {
+        return;
+    }
+
+    isProcessingQueue = true;
+    logToConsole("info", `Processing cloud operation queue (${cloudOperationQueue.length} items)`);
+
+    while (cloudOperationQueue.length > 0) {
+        const nextOperation = cloudOperationQueue[0];
+        try {
+            logToConsole("info", `Executing queued operation: ${nextOperation.name}`);
+            await nextOperation.operation();
+        } catch (error) {
+            logToConsole("error", `Error executing queued operation ${nextOperation.name}:`, error);
+        } finally {
+            cloudOperationQueue.shift(); // Remove the completed operation
+        }
+    }
+
+    isProcessingQueue = false;
+    logToConsole("info", "Cloud operation queue processing completed");
+}
+
+// Helper function to add operations to queue
+function queueCloudOperation(name, operation) {
+    cloudOperationQueue.push({ name, operation });
+    logToConsole("info", `Added ${name} to cloud operation queue`);
+    processCloudOperationQueue();
 }
 
 async function importFromS3() {
@@ -1524,39 +1560,6 @@ function openSyncModal() {
 let visibilityChangeTimeout = null;
 let isProcessingVisibilityChange = false;
 
-// Add this new function to handle the queue
-async function processCloudOperationQueue() {
-    if (isProcessingQueue || cloudOperationQueue.length === 0) {
-        return;
-    }
-
-    isProcessingQueue = true;
-    logToConsole("info", `Processing cloud operation queue (${cloudOperationQueue.length} items)`);
-
-    while (cloudOperationQueue.length > 0) {
-        const nextOperation = cloudOperationQueue[0];
-        try {
-            logToConsole("info", `Executing queued operation: ${nextOperation.name}`);
-            await nextOperation.operation();
-        } catch (error) {
-            logToConsole("error", `Error executing queued operation ${nextOperation.name}:`, error);
-        } finally {
-            cloudOperationQueue.shift(); // Remove the completed operation
-        }
-    }
-
-    isProcessingQueue = false;
-    logToConsole("info", "Cloud operation queue processing completed");
-}
-
-// Helper function to add operations to queue
-function queueCloudOperation(name, operation) {
-    cloudOperationQueue.push({ name, operation });
-    logToConsole("info", `Added ${name} to cloud operation queue`);
-    processCloudOperationQueue();
-}
-
-// Modify the visibility change handler
 document.addEventListener("visibilitychange", async () => {
     logToConsole("visibility", `Visibility changed: ${document.hidden ? "hidden" : "visible"}`);
 
@@ -1608,7 +1611,6 @@ document.addEventListener("visibilitychange", async () => {
                 return;
             }
 
-            // Queue the import operation instead of executing immediately
             queueCloudOperation("visibility-change-import", async () => {
                 try {
                     logToConsole("info", "Checking for updates from S3...");
