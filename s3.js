@@ -12,8 +12,6 @@ const awsSdkPromise = loadAwsSdk();
 let isPageFullyLoaded = false;
 let backupInterval = null;
 let isWaitingForUserInput = false;
-
-// Add these variables near the top of the file with other global variables
 let cloudOperationQueue = [];
 let isProcessingQueue = false;
 
@@ -226,7 +224,6 @@ function updateSyncStatus() {
   }
 }
 
-// Add this new function to handle the queue
 async function processCloudOperationQueue() {
     if (isProcessingQueue || cloudOperationQueue.length === 0) {
         return;
@@ -243,7 +240,7 @@ async function processCloudOperationQueue() {
         } catch (error) {
             logToConsole("error", `Error executing queued operation ${nextOperation.name}:`, error);
         } finally {
-            cloudOperationQueue.shift(); // Remove the completed operation
+            cloudOperationQueue.shift();
         }
     }
 
@@ -251,8 +248,15 @@ async function processCloudOperationQueue() {
     logToConsole("info", "Cloud operation queue processing completed");
 }
 
-// Helper function to add operations to queue
 function queueCloudOperation(name, operation) {
+    if (cloudOperationQueue.length > 0) {
+        const lastOperation = cloudOperationQueue[cloudOperationQueue.length - 1];
+        if (lastOperation.name === name) {
+            logToConsole("skip", `Skipping duplicate operation: ${name}`);
+            return;
+        }
+    }
+
     cloudOperationQueue.push({ name, operation });
     logToConsole("info", `Added ${name} to cloud operation queue`);
     processCloudOperationQueue();
