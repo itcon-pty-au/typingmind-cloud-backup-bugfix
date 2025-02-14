@@ -2189,6 +2189,11 @@ function exportBackupData() {
       localStorage: { ...localStorage },
       indexedDB: {},
     };
+
+    logToConsole("info", "Starting data export", {
+      localStorageKeys: Object.keys(exportData.localStorage).length
+    });
+
     const request = indexedDB.open("keyval-store", 1);
     request.onerror = () => reject(request.error);
     request.onsuccess = function (event) {
@@ -2196,9 +2201,18 @@ function exportBackupData() {
       const transaction = db.transaction(["keyval"], "readonly");
       const store = transaction.objectStore("keyval");
       transaction.oncomplete = () => {
-        const hasLocalStorageData =
-          Object.keys(exportData.localStorage).length > 0;
+        const hasLocalStorageData = Object.keys(exportData.localStorage).length > 0;
         const hasIndexedDBData = Object.keys(exportData.indexedDB).length > 0;
+
+        logToConsole("info", "Export data summary", {
+          localStorageKeys: Object.keys(exportData.localStorage).length,
+          indexedDBKeys: Object.keys(exportData.indexedDB).length,
+          localStorageSize: JSON.stringify(exportData.localStorage).length,
+          indexedDBSize: JSON.stringify(exportData.indexedDB).length,
+          hasLocalStorageData,
+          hasIndexedDBData
+        });
+
         if (!hasLocalStorageData && !hasIndexedDBData) {
           reject(new Error("No data found in localStorage or IndexedDB"));
           return;
@@ -2208,6 +2222,10 @@ function exportBackupData() {
       transaction.onerror = () => reject(transaction.error);
       store.getAllKeys().onsuccess = function (keyEvent) {
         const keys = keyEvent.target.result;
+        logToConsole("info", "IndexedDB keys found", {
+          count: keys.length
+        });
+
         store.getAll().onsuccess = function (valueEvent) {
           const values = valueEvent.target.result;
           keys.forEach((key, i) => {
