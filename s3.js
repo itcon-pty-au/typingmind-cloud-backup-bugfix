@@ -237,9 +237,9 @@ async function processCloudOperationQueue() {
         try {
             logToConsole("info", `Executing queued operation: ${nextOperation.name}`);
             await nextOperation.operation();
+            cloudOperationQueue.shift();
         } catch (error) {
             logToConsole("error", `Error executing queued operation ${nextOperation.name}:`, error);
-        } finally {
             cloudOperationQueue.shift();
         }
     }
