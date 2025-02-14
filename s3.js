@@ -531,12 +531,6 @@ async function importFromS3() {
 }
 
 async function backupToS3() {
-  if (isExportInProgress) {
-    logToConsole("skip", "Export already in progress, queueing this backup");
-    queueCloudOperation("backup", backupToS3);
-    return;
-  }
-
   isExportInProgress = true;
   let data = null;
   let dataStr = null;
@@ -2070,10 +2064,8 @@ async function performBackup() {
     return;
   }
   if (isExportInProgress) {
-    logToConsole(
-      "skip",
-      "Previous backup still in progress, skipping this iteration"
-    );
+    logToConsole("skip", "Previous backup still in progress, queueing this iteration");
+    queueCloudOperation("backup", performBackup);  // Changed from backupToS3 to performBackup
     return;
   }
   if (!wasImportSuccessful) {
@@ -2081,7 +2073,6 @@ async function performBackup() {
     return;
   }
 
-  isExportInProgress = true;
   try {
     await backupToS3();
     logToConsole("success", "Backup completed...");
@@ -2100,8 +2091,6 @@ async function performBackup() {
         startBackupInterval();
       }
     }, 5000);
-  } finally {
-    isExportInProgress = false;
   }
 }
 
