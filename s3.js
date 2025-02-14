@@ -525,8 +525,7 @@ async function importFromS3() {
     logToConsole("error", `Import failed with error:`, error);
     throw error;
   } finally {
-    isImportInProgress = false; 
-    isExportInProgress = false;
+    isImportInProgress = false;
     updateSyncStatus();
   }
 }
@@ -833,13 +832,11 @@ async function backupToS3() {
         await s3.putObject(putParams).promise();
         lastExportTime = Date.now();
       }
-
       await handleTimeBasedBackup();
       const currentTime = new Date().toLocaleString();
       localStorage.setItem("last-cloud-sync", currentTime);
       logToConsole("success", `Export completed successfully`);
       lastExportStatus = "success";
-
       var element = document.getElementById("last-sync-msg");
       if (element !== null) {
         element.innerText = `Last sync done at ${currentTime}`;
@@ -858,6 +855,7 @@ async function backupToS3() {
       data = null;
       dataStr = null;
       blob = null;
+      isExportInProgress = false;
       updateSyncStatus();
     }
   } catch (error) {
@@ -865,7 +863,6 @@ async function backupToS3() {
     updateSyncStatus();
     throw error;
   } finally {
-    isImportInProgress = false;
     isExportInProgress = false;
     updateSyncStatus();
   }
