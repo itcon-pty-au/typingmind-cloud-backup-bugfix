@@ -2200,7 +2200,32 @@ function exportBackupData() {
       const db = event.target.result;
       const transaction = db.transaction(["keyval"], "readonly");
       const store = transaction.objectStore("keyval");
-      transaction.oncomplete = () => {
+
+      // Create a promise that resolves when all data is collected
+      const collectData = new Promise((resolveData) => {
+        store.getAllKeys().onsuccess = function (keyEvent) {
+          const keys = keyEvent.target.result;
+          logToConsole("info", "IndexedDB keys found", {
+            count: keys.length
+          });
+
+          store.getAll().onsuccess = function (valueEvent) {
+            const values = valueEvent.target.result;
+            keys.forEach((key, i) => {
+              exportData.indexedDB[key] = values[i];
+            });
+            resolveData();
+          };
+        };
+      });
+
+      // Wait for both transaction completion and data collection
+      Promise.all([
+        collectData,
+        new Promise((resolveTransaction) => {
+          transaction.oncomplete = resolveTransaction;
+        })
+      ]).then(() => {
         const hasLocalStorageData = Object.keys(exportData.localStorage).length > 0;
         const hasIndexedDBData = Object.keys(exportData.indexedDB).length > 0;
 
@@ -2218,21 +2243,9 @@ function exportBackupData() {
           return;
         }
         resolve(exportData);
-      };
-      transaction.onerror = () => reject(transaction.error);
-      store.getAllKeys().onsuccess = function (keyEvent) {
-        const keys = keyEvent.target.result;
-        logToConsole("info", "IndexedDB keys found", {
-          count: keys.length
-        });
+      }).catch(reject);
 
-        store.getAll().onsuccess = function (valueEvent) {
-          const values = valueEvent.target.result;
-          keys.forEach((key, i) => {
-            exportData.indexedDB[key] = values[i];
-          });
-        };
-      };
+      transaction.onerror = () => reject(transaction.error);
     };
   });
 }
