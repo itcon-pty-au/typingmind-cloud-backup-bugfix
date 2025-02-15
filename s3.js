@@ -574,12 +574,22 @@ async function backupToS3() {
       throw new Error("Final backup blob is too small or empty");
     }
 
-    const currentCloudData = await s3.getObject({
-      Bucket: bucketName,
-      Key: "typingmind-backup.json",
-    }).promise();
+    // Get current cloud data size for comparison
+    let currentCloudSize = 0;
+    try {
+      const currentCloudData = await s3.getObject({
+        Bucket: bucketName,
+        Key: "typingmind-backup.json",
+      }).promise();
+      currentCloudSize = currentCloudData.Body.length;
+      logToConsole("info", "Current cloud backup size:", { size: currentCloudSize });
+    } catch (error) {
+      if (error.code !== 'NoSuchKey') {
+        throw error;
+      }
+    }
 
-    const cloudSize = currentCloudData.Body.length;
+    const cloudSize = currentCloudSize;
     const localSize = dataSize;
     const sizeDiffPercentage = Math.abs(((localSize - cloudSize) / cloudSize) * 100);
 
@@ -781,7 +791,29 @@ async function backupToS3() {
             `Complete multipart upload response:`,
             completeResult
           );
-          logToConsole("success", `Multipart upload completed successfully`);
+
+          // Verify the uploaded file size matches the local size
+          const verifyParams = {
+            Bucket: bucketName,
+            Key: "typingmind-backup.json"
+          };
+          
+          // Add a small delay to ensure S3 consistency
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          const verifyResult = await s3.getObject(verifyParams).promise();
+          const uploadedSize = verifyResult.Body.length;
+          
+          logToConsole("info", "Verifying uploaded file size", {
+            expectedSize: dataSize,
+            actualSize: uploadedSize
+          });
+
+          if (uploadedSize !== dataSize) {
+            throw new Error(`Upload verification failed: Size mismatch. Expected ${dataSize} bytes but got ${uploadedSize} bytes`);
+          }
+          
+          logToConsole("success", `Multipart upload completed and verified successfully`);
         } catch (completeError) {
           logToConsole("error", "Complete multipart upload failed:", {
             error: completeError,
@@ -804,6 +836,17 @@ async function backupToS3() {
           ContentType: "application/json",
           ServerSideEncryption: "AES256",
         }).promise();
+
+        // Verify the uploaded file size for standard upload too
+        const verifyResult = await s3.getObject({
+          Bucket: bucketName,
+          Key: "typingmind-backup.json"
+        }).promise();
+        
+        const uploadedSize = verifyResult.Body.length;
+        if (uploadedSize !== dataSize) {
+          throw new Error(`Standard upload verification failed: Size mismatch. Expected ${dataSize} bytes but got ${uploadedSize} bytes`);
+        }
       }
     } else {
       logToConsole("start", "Starting standard upload to S3");
@@ -814,6 +857,17 @@ async function backupToS3() {
         ContentType: "application/json",
         ServerSideEncryption: "AES256",
       }).promise();
+
+      // Verify the uploaded file size for small files too
+      const verifyResult = await s3.getObject({
+        Bucket: bucketName,
+        Key: "typingmind-backup.json"
+      }).promise();
+      
+      const uploadedSize = verifyResult.Body.length;
+      if (uploadedSize !== dataSize) {
+        throw new Error(`Upload verification failed: Size mismatch. Expected ${dataSize} bytes but got ${uploadedSize} bytes`);
+      }
     }
 
     await handleTimeBasedBackup();
