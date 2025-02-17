@@ -2161,40 +2161,54 @@ function importDataToStorage(data) {
       "backup-size",
     ];
 
-    Object.keys(data.localStorage).forEach((key) => {
+    // Clear existing localStorage except preserved keys
+    Object.keys(localStorage).forEach((key) => {
       if (!preserveKeys.includes(key)) {
-        localStorage.setItem(key, data.localStorage[key]);
+        localStorage.removeItem(key);
       }
     });
 
+    // Import new localStorage data
+    Object.keys(data.localStorage || {}).forEach((key) => {
+      if (!preserveKeys.includes(key)) {
+        try {
+          localStorage.setItem(key, data.localStorage[key]);
+        } catch (e) {
+          console.error(`Failed to restore localStorage key: ${key}`, e);
+        }
+      }
+    });
+
+    // Handle IndexedDB restoration
     const request = indexedDB.open("keyval-store");
     request.onerror = () => reject(request.error);
     request.onsuccess = function (event) {
       const db = event.target.result;
       const transaction = db.transaction(["keyval"], "readwrite");
       const objectStore = transaction.objectStore("keyval");
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      const deleteRequest = objectStore.clear();
-      deleteRequest.onsuccess = function () {
-        const indexedDBData = data.indexedDB;
-        Object.keys(indexedDBData).forEach((key) => {
-          objectStore.put(indexedDBData[key], key);
+
+      // Clear existing data
+      const clearRequest = objectStore.clear();
+      clearRequest.onsuccess = function () {
+        // Import new IndexedDB data
+        const indexedDBData = data.indexedDB || {};
+        const promises = Object.keys(indexedDBData).map(key => {
+          return new Promise((resolveKey) => {
+            const putRequest = objectStore.put(indexedDBData[key], key);
+            putRequest.onsuccess = () => resolveKey();
+            putRequest.onerror = () => {
+              console.error(`Failed to restore IndexedDB key: ${key}`);
+              resolveKey();
+            };
+          });
+        });
+
+        Promise.all(promises).then(() => {
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
         });
       };
     };
-    let extensionURLs = JSON.parse(
-      localStorage.getItem("TM_useExtensionURLs") || "[]"
-    );
-    if (!extensionURLs.some((url) => url.endsWith("s3.js"))) {
-      extensionURLs.push(
-        "https://itcon-pty-au.github.io/typingmind-cloud-backup-bugfix/s3.js"
-      );
-      localStorage.setItem(
-        "TM_useExtensionURLs",
-        JSON.stringify(extensionURLs)
-      );
-    }
   });
 }
 
